@@ -1,0 +1,33 @@
+{
+  "template_dir": "templates",
+  "timing": {
+    "loop_interval": 0.25,
+    "after_click": 0.65,
+    "after_visit_click": 1.8,
+    "after_pick_click": 1.2,
+    "after_home_click": 1.2,
+    "page_wait_timeout": 6.0,
+    "unknown_sleep": 1.0,
+    "no_button_sleep": 1.5,
+    "no_unvisited_sleep": 30.0
+  },
+  "behavior": {
+    "skip_recently_visited": true,
+    "visited_cache_seconds": 180,
+    "allow_fallback_click": true,
+    "max_visible_visit_buttons": 8,
+    "stop_after_cycles": 0,
+    "all_visible_visited_action": "revisit_top"
+  },
+  "clicker": {
+    "dry_run": false,
+    "random_offset": 2,
+    "click_down_up_delay": 0.05,
+    "bring_front_before_click": true
+  },
+  "debug": {
+    "save_unknown_screenshot": true,
+    "save_error_screenshot": true,
+    "debug_dir": "logs/runtime_debug"
+  }
+}
