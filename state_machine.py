@@ -37,7 +37,7 @@ import numpy as np
 
 from window_manager import GameWindow, find_game_window, bring_to_front, DEFAULT_WINDOW_KEYWORDS
 from screen_capture import ScreenCapture
-from vision import Vision, PageType, DEFAULT_ROIS, DEFAULT_THRESHOLDS, DEFAULT_CLICK_POINTS
+from vision import Vision, PageType, DEFAULT_ROIS, DEFAULT_THRESHOLDS, DEFAULT_CLICK_POINTS, resource_path
 from clicker import Clicker
 
 
@@ -102,14 +102,17 @@ def load_runtime_config(path: str | Path = "config_runtime.json") -> Dict[str, A
     优先读取 config_runtime.json。
     如果不存在，再尝试读取 config_v3.json。
     都不存在则使用内置默认配置。
+    支持 PyInstaller 打包后的路径（sys._MEIPASS）。
     """
     path = Path(path)
+    if not path.is_absolute():
+        path = resource_path(path)
 
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
             return deep_merge(DEFAULT_RUNTIME_CONFIG, json.load(f))
 
-    v3 = Path("config_v3.json")
+    v3 = resource_path("config_v3.json")
     if v3.exists():
         with v3.open("r", encoding="utf-8") as f:
             return deep_merge(DEFAULT_RUNTIME_CONFIG, json.load(f))
