@@ -39,7 +39,7 @@ logs/
 
 # PyInstaller
 *.manifest
-*.spec
+# *.spec  —— spec 文件是构建配置，应提交到仓库
 
 # Runtime generated files
 logs/runtime_debug/
