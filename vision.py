@@ -27,6 +27,8 @@ import numpy as np
 
 RatioROI = Sequence[float]
 
+REFERENCE_RESOLUTION = (820, 1529)
+
 
 class PageType:
     UNKNOWN = "UNKNOWN"
@@ -227,6 +229,18 @@ class Vision:
 
         self.use_gray = use_gray
 
+    def _get_adaptive_scales(self, frame_shape: Tuple[int, int]) -> Tuple[float, ...]:
+        ref_w, ref_h = REFERENCE_RESOLUTION
+        curr_h, curr_w = frame_shape[:2]
+        if curr_w <= 0 or curr_h <= 0:
+            return (1.0,)
+        scale_w = curr_w / ref_w
+        scale_h = curr_h / ref_h
+        base_scale = (scale_w + scale_h) / 2.0
+        base_scale = max(0.1, min(5.0, base_scale))
+        step = max(0.02, round(base_scale * 0.025, 2))
+        return tuple(round(base_scale + i * step, 3) for i in range(-2, 3))
+
     def load_default_templates(self) -> None:
         self.store.load_all(DEFAULT_THRESHOLDS.keys())
 
@@ -368,8 +382,9 @@ class Vision:
             3. 我的主页：右下角好友按钮
         """
         best_evidence: Optional[MatchResult] = None
+        scales = self._get_adaptive_scales(frame_bgr.shape)
 
-        # 好友列表：多个绿色“拜访”最有辨识度
+        # 好友列表：多个绿色"拜访"最有辨识度
         try:
             visits = self.find_visit_buttons(frame_bgr, max_results=3)
             if visits:
@@ -383,7 +398,7 @@ class Vision:
                 frame_bgr,
                 "friend_tab",
                 roi=self.rois["friend_tab"],
-                scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+                scales=scales,
             )
             best_evidence = tab
             if tab.found:
@@ -391,13 +406,13 @@ class Vision:
         except FileNotFoundError:
             pass
 
-        # 好友家主页：右下角是“回家”
+        # 好友家主页：右下角是"回家"
         try:
             home = self.match_template(
                 frame_bgr,
                 "home_button",
                 roi=self.rois["friend_home_home_button"],
-                scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+                scales=scales,
             )
             if best_evidence is None or home.score > best_evidence.score:
                 best_evidence = home
@@ -406,13 +421,13 @@ class Vision:
         except FileNotFoundError:
             pass
 
-        # 我的主页：右下角是“好友”
+        # 我的主页：右下角是"好友"
         try:
             friend = self.match_template(
                 frame_bgr,
                 "friend_menu",
                 roi=self.rois["self_friend_menu"],
-                scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+                scales=scales,
             )
             if best_evidence is None or friend.score > best_evidence.score:
                 best_evidence = friend
@@ -430,7 +445,7 @@ class Vision:
             frame_bgr,
             "friend_menu",
             roi=self.rois["self_friend_menu"],
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=self._get_adaptive_scales(frame_bgr.shape),
         )
 
     def find_visit_buttons(
@@ -446,7 +461,7 @@ class Vision:
             threshold=threshold,
             max_results=max_results,
             nms_iou=0.30,
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=self._get_adaptive_scales(frame_bgr.shape),
         )
         buttons.sort(key=lambda m: (m.center[1] if m.center else 999999, -m.score))
         return buttons
@@ -456,7 +471,7 @@ class Vision:
             frame_bgr,
             "home_button",
             roi=self.rois["friend_home_home_button"],
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=self._get_adaptive_scales(frame_bgr.shape),
         )
 
     def detect_pick_or_farm(self, frame_bgr: np.ndarray) -> Tuple[str, MatchResult]:
@@ -475,13 +490,14 @@ class Vision:
             ("NO_PICK", result)  没识别到
         """
         roi = self.rois["friend_action_buttons"]
+        scales = self._get_adaptive_scales(frame_bgr.shape)
 
         farm = self.match_template(
             frame_bgr,
             "farm_button",
             roi=roi,
             threshold=self.thresholds.get("farm_button", 0.72),
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=scales,
         )
 
         pick = self.match_template(
@@ -489,7 +505,7 @@ class Vision:
             "pick_button",
             roi=roi,
             threshold=self.thresholds.get("pick_button", 0.80),
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=scales,
         )
 
         hand = self.match_template(
@@ -497,7 +513,7 @@ class Vision:
             "pick_hand",
             roi=roi,
             threshold=self.thresholds.get("pick_hand", 0.76),
-            scales=(0.90, 0.95, 1.0, 1.05, 1.10),
+            scales=scales,
         )
 
         # 摘取优先：如果“一键摘取”和“一键务农”同时出现，只点摘取。
