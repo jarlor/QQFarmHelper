@@ -59,7 +59,10 @@ class QQFarmHelperGUI:
         container.pack(fill=tk.BOTH, expand=True)
 
         title = ttk.Label(container, text=APP_NAME, font=("Microsoft YaHei UI", 16, "bold"))
-        title.pack(anchor="center", pady=(0, 12))
+        title.pack(anchor="center", pady=(0, 4))
+
+        subtitle = ttk.Label(container, text="QQ 经典农场 自动辅助工具", font=("Microsoft YaHei UI", 10))
+        subtitle.pack(anchor="center", pady=(0, 12))
 
         self.status_var = tk.StringVar(value="状态：未启动")
         ttk.Label(container, textvariable=self.status_var, font=("Microsoft YaHei UI", 11)).pack(anchor="w", pady=(0, 8))
