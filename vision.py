@@ -45,6 +45,7 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "pick_button": 0.80,
     "pick_hand": 0.76,
     "farm_button": 0.72,
+    "friend_action_hoe": 0.82,
 }
 
 
@@ -62,6 +63,9 @@ DEFAULT_ROIS: Dict[str, RatioROI] = {
     # 2. 好友列表页：弹窗顶部区域，用于确认这是好友列表弹窗
     # 约 y=140~335，包含标题“好友”和 tabs
     "friend_popup_header": [0.00, 0.09, 1.00, 0.25],
+
+    # 好友弹窗右上角关闭按钮
+    "friend_popup_close": [0.86, 0.06, 1.00, 0.18],
 
     # 选中的“好友”tab 本体，约 x=20~220, y=240~335
     "friend_tab": [0.00, 0.14, 0.32, 0.24],
@@ -97,6 +101,7 @@ DEFAULT_CLICK_POINTS: Dict[str, Tuple[float, float]] = {
     "first_visit": (0.855, 0.342),
     "home": (0.910, 0.748),
     "action_center": (0.500, 0.745),
+    "friend_popup_close": (0.940, 0.095),
 }
 
 
@@ -482,6 +487,29 @@ class Vision:
         )
         buttons.sort(key=lambda m: (m.center[1] if m.center else 999999, -m.score))
         return buttons
+
+    def detect_friend_row_action(self, frame_bgr: np.ndarray, visit_button: MatchResult) -> MatchResult:
+        """
+        在好友列表的一行里检测可帮忙动作标记，例如金币后面的小锄头图标。
+        """
+        if not visit_button.box:
+            return MatchResult("friend_action_hoe", False, 0.0)
+
+        h, w = frame_bgr.shape[:2]
+        x1, y1, x2, y2 = visit_button.box
+        roi = [
+            0.00,
+            max(0.0, (y1 - 0.05 * h) / h),
+            max(0.01, x1 / w),
+            min(1.0, (y2 + 0.04 * h) / h),
+        ]
+        return self.match_template(
+            frame_bgr,
+            "friend_action_hoe",
+            roi=roi,
+            threshold=self.thresholds.get("friend_action_hoe", 0.82),
+            scales=self._get_adaptive_scales(frame_bgr.shape),
+        )
 
     def detect_friend_home_home_button(self, frame_bgr: np.ndarray) -> MatchResult:
         return self.match_template(

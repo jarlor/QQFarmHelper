@@ -10,13 +10,15 @@
     "page_wait_timeout": 6.0,
     "unknown_sleep": 1.0,
     "no_button_sleep": 1.5,
-    "no_unvisited_sleep": 30.0
+    "no_unvisited_sleep": 30.0,
+    "no_actionable_friends_sleep": 5.0
   },
   "behavior": {
     "skip_recently_visited": true,
     "visited_cache_seconds": 180,
     "allow_fallback_click": true,
     "max_visible_visit_buttons": 8,
+    "prefer_actionable_friends": true,
     "enabled_actions": [
       "pick_button",
       "pick_hand",

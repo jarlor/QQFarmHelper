@@ -25,6 +25,8 @@
    - "pick_button" 一键摘取
    - "pick_hand" 摘取手形
    - "farm_button" 一键务农
+
+   behavior.prefer_actionable_friends = true 时，会先在好友列表行里识别帮忙标记，只拜访有可操作标记的好友。
 ## 使用方法
 
 1. 电脑端打开 QQ 经典农场，尽量让游戏内容区域铺满窗口，避免因为分辨率不一致导致匹配失败。
@@ -35,6 +37,7 @@
 | `friend_menu.png` | 右下角”好友”按钮 |
 | `friend_tab.png` | 好友弹窗里的”好友”标签 |
 | `visit_button.png` | 第一位好友右侧”拜访”按钮 |
+| `friend_action_hoe.png` | 好友列表里金币后面的务农/帮忙小图标 |
 | `home_button.png` | 右下角”回家”按钮 |
 | `pick_button.png` | 一键摘取按钮 |
 | `pick_hand.png` | 摘取手形图标 |
@@ -73,6 +76,12 @@ python main_cli.py --cycles 1
 
 ```bash
 python main_cli.py --dry-run --max-steps 3
+```
+
+好友列表没有可操作好友时，关闭好友列表并等待指定秒数后重试：
+
+```bash
+python main_cli.py --no-actionable-sleep 60
 ```
 
 GUI 模式仍然保留：

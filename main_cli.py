@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         help="最多执行多少次状态机 step；适合 dry-run 调试，默认不限制",
     )
     parser.add_argument(
+        "--no-actionable-sleep",
+        type=float,
+        default=None,
+        help="好友列表没有可操作好友时，关闭列表后等待多少秒再重试",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="只打印点击坐标，不真实点击",
@@ -72,6 +78,12 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
 
     if args.max_steps is not None:
         config.setdefault("behavior", {})["max_steps"] = max(0, int(args.max_steps))
+
+    if args.no_actionable_sleep is not None:
+        config.setdefault("timing", {})["no_actionable_friends_sleep"] = max(
+            0.0,
+            float(args.no_actionable_sleep),
+        )
 
     if args.dry_run:
         config.setdefault("clicker", {})["dry_run"] = True

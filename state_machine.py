@@ -61,7 +61,8 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "page_wait_timeout": 6.0,
         "unknown_sleep": 1.00,
         "no_button_sleep": 1.50,
-        "no_unvisited_sleep": 30.0
+        "no_unvisited_sleep": 30.0,
+        "no_actionable_friends_sleep": 5.0
     },
 
     "behavior": {
@@ -70,6 +71,7 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "all_visible_visited_action": "revisit_top",
         "allow_fallback_click": True,
         "max_visible_visit_buttons": 8,
+        "prefer_actionable_friends": True,
         "enabled_actions": ["pick_button", "pick_hand", "farm_button"],
         "max_actions_per_friend": 5,
         "max_steps": 0,
@@ -278,6 +280,14 @@ class FarmStateMachine:
             return None
 
         behavior = self.config.get("behavior", {})
+        if behavior.get("prefer_actionable_friends", True):
+            actionable = self.filter_actionable_visit_buttons(frame_bgr, buttons)
+            if actionable:
+                buttons = actionable
+            else:
+                LOGGER.info("当前可见好友没有识别到帮忙标记，暂不拜访")
+                return None
+
         if not behavior.get("skip_recently_visited", True):
             return buttons[0]
 
@@ -320,6 +330,18 @@ class FarmStateMachine:
 
         LOGGER.info("当前可见好友都访问过，重新访问最上方好友，避免程序停住")
         return button
+
+    def filter_actionable_visit_buttons(self, frame_bgr: np.ndarray, buttons: List[Any]) -> List[Any]:
+        actionable: List[Any] = []
+        for button in buttons:
+            action = self.vision.detect_friend_row_action(frame_bgr, button)
+            LOGGER.info(
+                "好友行动标记：visit_center=%s score=%.3f found=%s",
+                button.center, action.score, action.found
+            )
+            if action.found:
+                actionable.append(button)
+        return actionable
 
     # ---------- 页面处理 ----------
 
@@ -389,8 +411,13 @@ class FarmStateMachine:
 
         button = self.choose_visit_button(frame, buttons)
         if button is None:
-            LOGGER.info("当前可见好友都在近期访问缓存里，暂停一会儿")
-            time.sleep(float(self.config["timing"].get("no_unvisited_sleep", 30.0)))
+            if self.config.get("behavior", {}).get("prefer_actionable_friends", True):
+                LOGGER.info("当前可见好友没有可操作标记，关闭好友列表后等待刷新")
+                self.close_friend_list()
+                time.sleep(float(self.config["timing"].get("no_actionable_friends_sleep", 5.0)))
+            else:
+                LOGGER.info("当前可见好友都在近期访问缓存里，暂停一会儿")
+                time.sleep(float(self.config["timing"].get("no_unvisited_sleep", 30.0)))
             return
 
         result = self.clicker.click_match(self.window, button)
@@ -398,6 +425,15 @@ class FarmStateMachine:
 
         self.stats.visits += 1
         self.sleep("after_visit_click")
+
+    def close_friend_list(self) -> None:
+        if self.window is None:
+            return
+
+        rx, ry = self.config["click_points"].get("friend_popup_close", (0.94, 0.095))
+        result = self.clicker.click_relative(self.window, rx, ry)
+        LOGGER.info("关闭好友列表：%s", result)
+        self.sleep("after_click")
 
     def handle_friend_home(self, frame: np.ndarray) -> None:
         """
