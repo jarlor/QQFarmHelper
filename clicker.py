@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
+import logging
 import platform
 import random
 import time
@@ -30,6 +31,7 @@ from window_manager import GameWindow, Rect, refresh_window, bring_to_front
 
 
 SYSTEM = platform.system()
+LOGGER = logging.getLogger("qq_farm_helper.clicker")
 
 
 @dataclass
@@ -86,7 +88,7 @@ class Clicker:
         x, y = self._apply_random_offset(int(x), int(y))
 
         if self.dry_run:
-            print(f"[DRY-RUN] click_screen ({x}, {y}) button={button}")
+            LOGGER.info("[DRY-RUN] click_screen (%s, %s) button=%s", x, y, button)
             return ClickResult(True, (x, y), "dry_run")
 
         if SYSTEM == "Windows":

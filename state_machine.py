@@ -19,8 +19,8 @@ QQ经典农场辅助工具的状态机。
         只检测右侧所有“拜访”按钮，选择最上方且最近未访问过的一行。
 
     FRIEND_HOME:
-        只检测“一键摘取 / 一键务农”和右下角“回家”。
-        farm_button 优先级最高：识别到“一键务农”就跳过，不点击。
+        只在好友农场页检测白名单动作按钮。
+        默认点击“一键摘取 / 摘取手形 / 一键务农”，动作处理完成后回家。
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "after_click": 0.65,
         "after_visit_click": 1.80,
         "after_pick_click": 1.20,
+        "after_action_click": 1.20,
         "after_home_click": 1.20,
         "page_wait_timeout": 6.0,
         "unknown_sleep": 1.00,
@@ -69,6 +70,9 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "all_visible_visited_action": "revisit_top",
         "allow_fallback_click": True,
         "max_visible_visit_buttons": 8,
+        "enabled_actions": ["pick_button", "pick_hand", "farm_button"],
+        "max_actions_per_friend": 5,
+        "max_steps": 0,
         "stop_after_cycles": 0
     },
 
@@ -125,7 +129,7 @@ class BotStats:
     cycles: int = 0
     visits: int = 0
     picks: int = 0
-    skips_farm: int = 0
+    farms: int = 0
     no_pick: int = 0
     unknown_pages: int = 0
     errors: int = 0
@@ -182,7 +186,7 @@ class FarmStateMachine:
             return True
 
         keywords = self.config.get("window_keywords", DEFAULT_WINDOW_KEYWORDS)
-        self.window = find_game_window(keywords=keywords, min_width=300, min_height=300)
+        self.window = find_game_window(keywords=keywords)
 
         if self.window:
             LOGGER.info("找到窗口：%s", self.window.title)
@@ -398,32 +402,15 @@ class FarmStateMachine:
     def handle_friend_home(self, frame: np.ndarray) -> None:
         """
         好友家主页：
-            1. 检测一键务农/一键摘取。
-            2. 有摘取才点。
-            3. 识别到务农就跳过。
-            4. 最后回家。
+            1. 检测白名单动作按钮。
+            2. 找到动作就点击，点击后重新截图继续找。
+            3. 没有动作后回家。
         """
         if self.window is None:
             return
 
-        state, action = self.vision.detect_pick_or_farm(frame)
-        LOGGER.info(
-            "action_state=%s best=%s score=%.3f center=%s",
-            state, action.template_name, action.score, action.center
-        )
-
-        if state == "PICK":
-            result = self.clicker.click_match(self.window, action)
-            LOGGER.info("点击摘取：%s", result)
-            self.stats.picks += 1
-            self.sleep("after_pick_click")
-
-        elif state == "SKIP":
-            LOGGER.info("识别到一键务农，跳过，不点击")
-            self.stats.skips_farm += 1
-
-        else:
-            LOGGER.info("没有识别到可摘取按钮")
+        actions_clicked = self.handle_friend_actions(frame)
+        if actions_clicked <= 0:
             self.stats.no_pick += 1
 
         # 重新截图后再找回家，避免摘取后画面变化
@@ -448,6 +435,61 @@ class FarmStateMachine:
         self.stats.cycles += 1
         self.sleep("after_home_click")
 
+    def handle_friend_actions(self, frame: np.ndarray) -> int:
+        """
+        在好友家页面处理所有允许的动作按钮。
+        每点一次都重新截图，避免同一位置重复点击旧匹配结果。
+        """
+        if self.window is None:
+            return 0
+
+        behavior = self.config.get("behavior", {})
+        enabled_actions = behavior.get("enabled_actions", ["pick_button", "pick_hand", "farm_button"])
+        max_actions = int(behavior.get("max_actions_per_friend", 5))
+        actions_clicked = 0
+        current = frame
+        clicked_keys: set[tuple[str, tuple[int, int] | None]] = set()
+
+        for _ in range(max(1, max_actions)):
+            actions = [
+                action
+                for action in self.vision.detect_friend_actions(current, enabled_actions=enabled_actions)
+                if (action.action_name, action.match.center) not in clicked_keys
+            ]
+            if not actions:
+                LOGGER.info("好友家没有识别到可点击动作")
+                break
+
+            action = actions[0]
+            match = action.match
+            clicked_keys.add((action.action_name, match.center))
+            LOGGER.info(
+                "点击好友动作：%s score=%.3f center=%s",
+                action.action_name, match.score, match.center
+            )
+            result = self.clicker.click_match(self.window, match)
+            LOGGER.info("动作点击结果：%s", result)
+
+            if action.action_name in ("pick_button", "pick_hand"):
+                self.stats.picks += 1
+            elif action.action_name == "farm_button":
+                self.stats.farms += 1
+
+            actions_clicked += 1
+            self.sleep("after_action_click")
+
+            refreshed = self.grab()
+            if refreshed is None:
+                break
+
+            detection = self.vision.detect_page_type(refreshed)
+            if detection.page_type != PageType.FRIEND_HOME:
+                LOGGER.info("动作点击后页面已离开好友家：%s", detection.page_type)
+                break
+            current = refreshed
+
+        return actions_clicked
+
     def handle_unknown(self, frame: np.ndarray, detection) -> None:
         self.stats.unknown_pages += 1
         LOGGER.warning("未知页面 score=%.3f evidence=%s", detection.score, detection.evidence)
@@ -466,6 +508,7 @@ class FarmStateMachine:
         由 main.py 的热键控制。
         """
         LOGGER.info("状态机启动")
+        steps = 0
         try:
             while not should_stop():
                 if should_pause():
@@ -478,6 +521,13 @@ class FarmStateMachine:
                     self.stats.errors += 1
                     LOGGER.exception("状态机 step 异常")
                     time.sleep(1.0)
+
+                steps += 1
+
+                max_steps = int(self.config.get("behavior", {}).get("max_steps", 0))
+                if max_steps > 0 and steps >= max_steps:
+                    LOGGER.info("达到 max_steps=%s，停止", max_steps)
+                    break
 
                 stop_after = int(self.config.get("behavior", {}).get("stop_after_cycles", 0))
                 if stop_after > 0 and self.stats.cycles >= stop_after:

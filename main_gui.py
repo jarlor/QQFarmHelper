@@ -67,7 +67,7 @@ class QQFarmHelperGUI:
         self.status_var = tk.StringVar(value="状态：未启动")
         ttk.Label(container, textvariable=self.status_var, font=("Microsoft YaHei UI", 11)).pack(anchor="w", pady=(0, 8))
 
-        self.stats_var = tk.StringVar(value="访问：0    摘取：0    跳过务农：0    无可摘：0")
+        self.stats_var = tk.StringVar(value="访问：0    摘取：0    务农：0    无动作：0")
         ttk.Label(container, textvariable=self.stats_var, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(0, 8))
 
         self.tip_var = tk.StringVar(value="点击“开始”后会自动寻找 QQ经典农场窗口。")
@@ -181,7 +181,7 @@ class QQFarmHelperGUI:
             s = self.bot.stats
             self.stats_var.set(
                 f"访问：{s.visits}    摘取：{s.picks}    "
-                f"跳过务农：{s.skips_farm}    无可摘：{s.no_pick}"
+                f"务农：{s.farms}    无动作：{s.no_pick}"
             )
             self.small_var.set(
                 f"循环：{s.cycles}    未知页面：{s.unknown_pages}    异常：{s.errors}"

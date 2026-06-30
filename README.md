@@ -11,8 +11,8 @@
 - 使用 OpenCV 模板匹配识别按钮
 - 自动打开好友列表
 - 自动拜访好友
-- 识别一键摘取和一键务农
-- 优先摘取，不主动务农
+- 识别好友家的一键摘取、摘取手形、一键务农等动作按钮
+- 只点击白名单里的动作按钮，默认会点击一键摘取和一键务农
 - 当前可见好友都访问过时，默认重新访问最上方好友
    config_runtime.json:
    behavior.all_visible_visited_action = "revisit_top"
@@ -20,6 +20,11 @@
    - "revisit_top" 默认，全部访问过时继续访问最上方
    - "clear_cache" 全部访问过时清空缓存后访问最上方
    - "wait" 恢复旧逻辑，全部访问过就等待
+
+   behavior.enabled_actions 控制好友家允许点击的动作：
+   - "pick_button" 一键摘取
+   - "pick_hand" 摘取手形
+   - "farm_button" 一键务农
 ## 使用方法
 
 1. 电脑端打开 QQ 经典农场，尽量让游戏内容区域铺满窗口，避免因为分辨率不一致导致匹配失败。
@@ -33,7 +38,7 @@
 | `home_button.png` | 右下角”回家”按钮 |
 | `pick_button.png` | 一键摘取按钮 |
 | `pick_hand.png` | 摘取手形图标 |
-| `farm_button.png` | 一键务农按钮（负样本，禁止点击） |
+| `farm_button.png` | 一键务农按钮 |
 
 ## 环境
 
@@ -51,6 +56,26 @@ pip install -r requirements.txt
 ```
 
 ## 运行
+
+终端模式：
+
+```bash
+python main_cli.py
+```
+
+只处理一个好友循环后停止：
+
+```bash
+python main_cli.py --cycles 1
+```
+
+只打印日志和点击坐标，不真实点击：
+
+```bash
+python main_cli.py --dry-run --max-steps 3
+```
+
+GUI 模式仍然保留：
 
 ```bash
 python main_gui.py

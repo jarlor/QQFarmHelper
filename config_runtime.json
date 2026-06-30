@@ -5,6 +5,7 @@
     "after_click": 0.65,
     "after_visit_click": 1.8,
     "after_pick_click": 1.2,
+    "after_action_click": 1.2,
     "after_home_click": 1.2,
     "page_wait_timeout": 6.0,
     "unknown_sleep": 1.0,
@@ -16,6 +17,13 @@
     "visited_cache_seconds": 180,
     "allow_fallback_click": true,
     "max_visible_visit_buttons": 8,
+    "enabled_actions": [
+      "pick_button",
+      "pick_hand",
+      "farm_button"
+    ],
+    "max_actions_per_friend": 5,
+    "max_steps": 0,
     "stop_after_cycles": 0,
     "all_visible_visited_action": "revisit_top"
   },

@@ -100,6 +100,17 @@ DEFAULT_CLICK_POINTS: Dict[str, Tuple[float, float]] = {
 }
 
 
+ACTION_PRIORITY: Dict[str, int] = {
+    "pick_button": 10,
+    "pick_hand": 20,
+    "farm_button": 30,
+}
+
+
+def action_priority(action_name: str) -> int:
+    return ACTION_PRIORITY.get(action_name, 100)
+
+
 @dataclass
 class MatchResult:
     template_name: str
@@ -124,6 +135,12 @@ class PageDetection:
     page_type: str
     score: float
     evidence: Optional[MatchResult] = None
+
+
+@dataclass
+class ActionDetection:
+    action_name: str
+    match: MatchResult
 
 
 def resource_path(relative_path: str | Path) -> Path:
@@ -529,6 +546,35 @@ class Vision:
         best = max([farm, pick, hand], key=lambda r: r.score)
         return "NO_PICK", best
 
+    def detect_friend_actions(
+        self,
+        frame_bgr: np.ndarray,
+        enabled_actions: Optional[Sequence[str]] = None,
+    ) -> List[ActionDetection]:
+        """
+        只应该在 FRIEND_HOME 页面调用。
+
+        返回当前好友农场页可点击的动作按钮。调用方负责按顺序点击，并在每次点击后重新截图。
+        """
+        action_names = list(enabled_actions or ("pick_button", "pick_hand", "farm_button"))
+        roi = self.rois["friend_action_buttons"]
+        scales = self._get_adaptive_scales(frame_bgr.shape)
+        actions: List[ActionDetection] = []
+
+        for name in action_names:
+            result = self.match_template(
+                frame_bgr,
+                name,
+                roi=roi,
+                threshold=self.thresholds.get(name),
+                scales=scales,
+            )
+            if result.found:
+                actions.append(ActionDetection(action_name=name, match=result))
+
+        actions.sort(key=lambda a: action_priority(a.action_name))
+        return actions
+
     # ---------- 多帧确认 ----------
 
     def confirm_template(
@@ -704,6 +750,8 @@ if __name__ == "__main__":
 
     elif det.page_type == PageType.FRIEND_HOME:
         home = vision.detect_friend_home_home_button(frame)
-        state, action = vision.detect_pick_or_farm(frame)
+        actions = vision.detect_friend_actions(frame)
         print("home:", home)
-        print("action:", state, action)
+        print("actions:", len(actions))
+        for i, action in enumerate(actions, 1):
+            print(i, action)

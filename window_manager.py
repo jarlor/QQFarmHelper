@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Tuple
 import ctypes
 import platform
+import subprocess
 import time
 
 
@@ -24,6 +25,19 @@ DEFAULT_WINDOW_KEYWORDS = [
     "MuMu",
     "雷电模拟器",
     "腾讯手游助手",
+]
+
+DEFAULT_MIN_WIDTH = 120
+DEFAULT_MIN_HEIGHT = 120
+MACOS_FALLBACK_PROCESS_NAMES = [
+    "QQEXMiniProgram",
+    "QQMini",
+    "MuMu",
+]
+MACOS_FALLBACK_BUNDLE_KEYWORDS = [
+    "com.tencent.qqexminiprogram",
+    "mumu",
+    "leidian",
 ]
 
 
@@ -186,7 +200,127 @@ def _game_window_from_mac_info(info: dict) -> Optional[GameWindow]:
     )
 
 
-def is_normal_window(hwnd: int, min_width: int = 300, min_height: int = 300) -> bool:
+def _escape_applescript_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _macos_fallback_process_names(keywords: Iterable[str]) -> list[str]:
+    names = list(MACOS_FALLBACK_PROCESS_NAMES)
+    try:
+        AppKit, _ = _require_quartz_modules()
+        for app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+            name = str(app.localizedName() or "").strip()
+            bundle_id = str(app.bundleIdentifier() or "").strip().lower()
+            if not name:
+                continue
+            if any(marker in bundle_id for marker in MACOS_FALLBACK_BUNDLE_KEYWORDS):
+                if name not in names:
+                    names.append(name)
+    except Exception:
+        pass
+
+    return names
+
+
+def _run_macos_window_applescript(process_names: Iterable[str]) -> str:
+    names_literal = ", ".join(f'"{_escape_applescript_string(name)}"' for name in process_names if name)
+    if not names_literal:
+        return ""
+
+    script = f"""
+set processNames to {{{names_literal}}}
+set outputLines to {{}}
+tell application "System Events"
+  repeat with procName in processNames
+    try
+      if exists process (procName as text) then
+        tell process (procName as text)
+          set procPid to unix id
+          set procDisplayName to name
+          repeat with win in windows
+            try
+              set winTitle to ""
+              try
+                set winTitle to name of win as text
+              end try
+              if winTitle is "" or winTitle is "missing value" then
+                try
+                  set winTitle to value of attribute "AXTitle" of win as text
+                end try
+              end if
+              set winPos to position of win
+              set winSize to size of win
+              set lineText to (procPid as text) & tab & procDisplayName & tab & winTitle & tab & ((item 1 of winPos) as text) & tab & ((item 2 of winPos) as text) & tab & ((item 1 of winSize) as text) & tab & ((item 2 of winSize) as text)
+              set end of outputLines to lineText
+            end try
+          end repeat
+        end tell
+      end if
+    end try
+  end repeat
+end tell
+set AppleScript's text item delimiters to linefeed
+return outputLines as text
+"""
+
+    try:
+        completed = subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def _parse_macos_fallback_windows(output: str) -> list[GameWindow]:
+    windows: list[GameWindow] = []
+    for line in output.splitlines():
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) != 7:
+            continue
+
+        pid_raw, proc_name, title, left, top, width, height = parts
+        try:
+            pid = int(pid_raw)
+            rect = Rect(int(float(left)), int(float(top)), int(float(width)), int(float(height)))
+        except ValueError:
+            continue
+
+        if rect.width <= 0 or rect.height <= 0:
+            continue
+
+        title = title.strip() or proc_name.strip()
+        hwnd = -pid if title == proc_name else -abs(hash((pid, title, rect.tuple)) % 2_000_000_000)
+        windows.append(
+            GameWindow(
+                hwnd=hwnd,
+                title=title,
+                window_rect=rect,
+                client_rect=rect,
+                platform="Darwin",
+                metadata={"owner_pid": pid, "owner_name": proc_name, "source": "system_events"},
+            )
+        )
+
+    return windows
+
+
+def _get_macos_fallback_windows(keywords: Iterable[str]) -> list[GameWindow]:
+    process_names = _macos_fallback_process_names(keywords)
+    return _parse_macos_fallback_windows(_run_macos_window_applescript(process_names))
+
+
+def is_normal_window(
+    hwnd: int,
+    min_width: int = DEFAULT_MIN_WIDTH,
+    min_height: int = DEFAULT_MIN_HEIGHT,
+) -> bool:
     if SYSTEM == "Windows":
         _, win32gui = _require_windows_modules()
         if not win32gui.IsWindow(hwnd):
@@ -211,8 +345,8 @@ def is_normal_window(hwnd: int, min_width: int = 300, min_height: int = 300) -> 
 
 def enum_candidate_windows(
     keywords: Optional[Iterable[str]] = None,
-    min_width: int = 300,
-    min_height: int = 300,
+    min_width: int = DEFAULT_MIN_WIDTH,
+    min_height: int = DEFAULT_MIN_HEIGHT,
 ) -> List[GameWindow]:
     """
     枚举符合关键词的窗口。
@@ -296,14 +430,26 @@ def _enum_candidate_windows_macos(
         except Exception:
             continue
 
+    seen_keys = {(w.title, w.client_rect.tuple) for w in results}
+    for window in _get_macos_fallback_windows(keyword_list):
+        if window.client_rect.width < min_width or window.client_rect.height < min_height:
+            continue
+        if not _matches_keywords(window.title, keyword_list):
+            continue
+        key = (window.title, window.client_rect.tuple)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        results.append(window)
+
     results.sort(key=lambda w: w.client_rect.width * w.client_rect.height, reverse=True)
     return results
 
 
 def find_game_window(
     keywords: Optional[Iterable[str]] = None,
-    min_width: int = 300,
-    min_height: int = 300,
+    min_width: int = DEFAULT_MIN_WIDTH,
+    min_height: int = DEFAULT_MIN_HEIGHT,
 ) -> Optional[GameWindow]:
     """
     返回最可能的 QQ经典农场窗口。
@@ -338,6 +484,10 @@ def refresh_window(hwnd: int) -> Optional[GameWindow]:
             for info in _get_mac_window_infos():
                 if _mac_window_id(info) == int(hwnd):
                     return _game_window_from_mac_info(info)
+            if hwnd < 0:
+                for window in _get_macos_fallback_windows(DEFAULT_WINDOW_KEYWORDS):
+                    if window.hwnd == hwnd:
+                        return window
             return None
 
         raise RuntimeError(f"暂不支持当前系统：{SYSTEM}")
@@ -387,8 +537,8 @@ def wait_for_game_window(
     keywords: Optional[Iterable[str]] = None,
     timeout: float = 10.0,
     interval: float = 0.5,
-    min_width: int = 300,
-    min_height: int = 300,
+    min_width: int = DEFAULT_MIN_WIDTH,
+    min_height: int = DEFAULT_MIN_HEIGHT,
 ) -> Optional[GameWindow]:
     """
     在 timeout 秒内等待游戏窗口出现。
