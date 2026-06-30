@@ -1,27 +1,21 @@
 # -*- coding: utf-8 -*-
 """
 window_manager.py
-自动寻找 QQ经典农场窗口，并返回“客户区”坐标。
+自动寻找 QQ经典农场窗口，并返回截图和点击使用的屏幕坐标。
 
-依赖：
-    pip install pywin32
-
-说明：
-    - 优先使用客户区 client rect，避免把 Win11 标题栏算进截图。
-    - 所有坐标均为屏幕物理像素坐标。
-    - 程序启动时会尝试设置 DPI Awareness，减少 Windows 缩放导致的坐标偏差。
+Windows 使用 pywin32；macOS 使用 PyObjC 的 Quartz/AppKit。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 import ctypes
+import platform
 import time
 
-import win32con
-import win32gui
 
+SYSTEM = platform.system()
 
 DEFAULT_WINDOW_KEYWORDS = [
     "QQ经典农场",
@@ -70,38 +64,65 @@ class GameWindow:
     title: str
     window_rect: Rect
     client_rect: Rect
+    platform: str = SYSTEM
+    metadata: dict[str, Any] | None = None
 
     @property
     def is_valid(self) -> bool:
-        return bool(self.hwnd) and win32gui.IsWindow(self.hwnd)
+        return refresh_window(self.hwnd) is not None
+
+
+def _require_windows_modules():
+    try:
+        import win32con
+        import win32gui
+    except ImportError as exc:
+        raise RuntimeError("Windows 窗口控制需要安装 pywin32：pip install pywin32") from exc
+
+    return win32con, win32gui
+
+
+def _require_quartz_modules():
+    try:
+        import AppKit
+        import Quartz
+    except ImportError as exc:
+        raise RuntimeError(
+            "macOS 窗口控制需要安装 PyObjC：pip install pyobjc-framework-Quartz pyobjc-framework-Cocoa"
+        ) from exc
+
+    return AppKit, Quartz
 
 
 def set_dpi_awareness() -> None:
     """
-    设置进程 DPI 感知，避免 125%/150% 缩放下截图坐标和点击坐标错位。
-    多次调用也没关系。
+    Windows 设置进程 DPI 感知，避免缩放导致截图坐标和点击坐标错位。
+    macOS 下不需要处理。
     """
+    if SYSTEM != "Windows":
+        return
+
     try:
-        # Windows 8.1+
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
     except Exception:
         try:
-            # Windows 7+
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             pass
 
 
-def _get_window_rect(hwnd: int) -> Rect:
+def _get_window_rect_windows(hwnd: int) -> Rect:
+    _, win32gui = _require_windows_modules()
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     return Rect(left, top, max(0, right - left), max(0, bottom - top))
 
 
-def _get_client_rect_on_screen(hwnd: int) -> Rect:
+def _get_client_rect_on_screen_windows(hwnd: int) -> Rect:
     """
-    获取窗口客户区在屏幕上的位置。
+    获取 Windows 窗口客户区在屏幕上的位置。
     客户区不包含标题栏、边框。推荐截图和相对坐标都基于客户区。
     """
+    _, win32gui = _require_windows_modules()
     left, top, right, bottom = win32gui.GetClientRect(hwnd)
     screen_left, screen_top = win32gui.ClientToScreen(hwnd, (left, top))
     screen_right, screen_bottom = win32gui.ClientToScreen(hwnd, (right, bottom))
@@ -113,23 +134,79 @@ def _get_client_rect_on_screen(hwnd: int) -> Rect:
     )
 
 
-def is_normal_window(hwnd: int, min_width: int = 300, min_height: int = 300) -> bool:
-    if not win32gui.IsWindow(hwnd):
-        return False
-    if not win32gui.IsWindowVisible(hwnd):
-        return False
-    if win32gui.IsIconic(hwnd):
-        return False
+def _mac_bounds_to_rect(bounds: dict) -> Rect:
+    return Rect(
+        int(round(bounds.get("X", 0))),
+        int(round(bounds.get("Y", 0))),
+        max(0, int(round(bounds.get("Width", 0)))),
+        max(0, int(round(bounds.get("Height", 0)))),
+    )
 
-    title = win32gui.GetWindowText(hwnd).strip()
+
+def _mac_title(info: dict) -> str:
+    owner = str(info.get("kCGWindowOwnerName") or "").strip()
+    name = str(info.get("kCGWindowName") or "").strip()
+
+    if owner and name:
+        return f"{owner} - {name}"
+    return name or owner
+
+
+def _mac_window_id(info: dict) -> int:
+    return int(info.get("kCGWindowNumber", 0) or 0)
+
+
+def _mac_owner_pid(info: dict) -> int:
+    return int(info.get("kCGWindowOwnerPID", 0) or 0)
+
+
+def _get_mac_window_infos() -> list[dict]:
+    _, Quartz = _require_quartz_modules()
+    options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+    return list(Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or [])
+
+
+def _game_window_from_mac_info(info: dict) -> Optional[GameWindow]:
+    title = _mac_title(info)
     if not title:
-        return False
+        return None
 
-    rect = _get_window_rect(hwnd)
-    if rect.width < min_width or rect.height < min_height:
-        return False
+    bounds = info.get("kCGWindowBounds") or {}
+    rect = _mac_bounds_to_rect(bounds)
+    if rect.width <= 0 or rect.height <= 0:
+        return None
 
-    return True
+    return GameWindow(
+        hwnd=_mac_window_id(info),
+        title=title,
+        window_rect=rect,
+        client_rect=rect,
+        platform="Darwin",
+        metadata={"owner_pid": _mac_owner_pid(info), "owner_name": info.get("kCGWindowOwnerName")},
+    )
+
+
+def is_normal_window(hwnd: int, min_width: int = 300, min_height: int = 300) -> bool:
+    if SYSTEM == "Windows":
+        _, win32gui = _require_windows_modules()
+        if not win32gui.IsWindow(hwnd):
+            return False
+        if not win32gui.IsWindowVisible(hwnd):
+            return False
+        if win32gui.IsIconic(hwnd):
+            return False
+
+        title = win32gui.GetWindowText(hwnd).strip()
+        if not title:
+            return False
+
+        rect = _get_window_rect_windows(hwnd)
+        return rect.width >= min_width and rect.height >= min_height
+
+    if SYSTEM == "Darwin":
+        return refresh_window(hwnd) is not None
+
+    raise RuntimeError(f"暂不支持当前系统：{SYSTEM}")
 
 
 def enum_candidate_windows(
@@ -141,11 +218,29 @@ def enum_candidate_windows(
     枚举符合关键词的窗口。
     keywords 为空时，返回所有可见普通窗口。
     """
-    set_dpi_awareness()
+    if SYSTEM == "Windows":
+        return _enum_candidate_windows_windows(keywords, min_width, min_height)
 
-    keywords = list(keywords or [])
+    if SYSTEM == "Darwin":
+        return _enum_candidate_windows_macos(keywords, min_width, min_height)
+
+    raise RuntimeError(f"暂不支持当前系统：{SYSTEM}")
+
+
+def _matches_keywords(title: str, keywords: Iterable[str]) -> bool:
+    lowered_title = title.lower()
     lowered_keywords = [k.lower() for k in keywords if k]
+    return not lowered_keywords or any(k in lowered_title for k in lowered_keywords)
 
+
+def _enum_candidate_windows_windows(
+    keywords: Optional[Iterable[str]],
+    min_width: int,
+    min_height: int,
+) -> List[GameWindow]:
+    set_dpi_awareness()
+    _, win32gui = _require_windows_modules()
+    keyword_list = list(keywords or [])
     results: List[GameWindow] = []
 
     def callback(hwnd: int, _extra) -> None:
@@ -154,15 +249,12 @@ def enum_candidate_windows(
                 return
 
             title = win32gui.GetWindowText(hwnd).strip()
-            title_lower = title.lower()
-
-            if lowered_keywords and not any(k in title_lower for k in lowered_keywords):
+            if not _matches_keywords(title, keyword_list):
                 return
 
-            window_rect = _get_window_rect(hwnd)
-            client_rect = _get_client_rect_on_screen(hwnd)
+            window_rect = _get_window_rect_windows(hwnd)
+            client_rect = _get_client_rect_on_screen_windows(hwnd)
 
-            # 客户区太小的一般不是游戏窗口
             if client_rect.width < min_width or client_rect.height < min_height:
                 return
 
@@ -172,15 +264,38 @@ def enum_candidate_windows(
                     title=title,
                     window_rect=window_rect,
                     client_rect=client_rect,
+                    platform="Windows",
                 )
             )
         except Exception:
-            # 枚举窗口时个别窗口会异常，直接跳过
             return
 
     win32gui.EnumWindows(callback, None)
+    results.sort(key=lambda w: w.client_rect.width * w.client_rect.height, reverse=True)
+    return results
 
-    # 优先面积大的、标题更匹配的窗口
+
+def _enum_candidate_windows_macos(
+    keywords: Optional[Iterable[str]],
+    min_width: int,
+    min_height: int,
+) -> List[GameWindow]:
+    keyword_list = list(keywords or [])
+    results: List[GameWindow] = []
+
+    for info in _get_mac_window_infos():
+        try:
+            window = _game_window_from_mac_info(info)
+            if window is None:
+                continue
+            if window.client_rect.width < min_width or window.client_rect.height < min_height:
+                continue
+            if not _matches_keywords(window.title, keyword_list):
+                continue
+            results.append(window)
+        except Exception:
+            continue
+
     results.sort(key=lambda w: w.client_rect.width * w.client_rect.height, reverse=True)
     return results
 
@@ -203,18 +318,29 @@ def find_game_window(
 
 def refresh_window(hwnd: int) -> Optional[GameWindow]:
     """
-    已知 hwnd 时，重新读取窗口位置。
+    已知窗口 ID 时，重新读取窗口位置。
     窗口被拖动、缩放后需要调用这个。
     """
     try:
-        if not is_normal_window(hwnd):
+        if SYSTEM == "Windows":
+            _, win32gui = _require_windows_modules()
+            if not is_normal_window(hwnd):
+                return None
+            return GameWindow(
+                hwnd=hwnd,
+                title=win32gui.GetWindowText(hwnd).strip(),
+                window_rect=_get_window_rect_windows(hwnd),
+                client_rect=_get_client_rect_on_screen_windows(hwnd),
+                platform="Windows",
+            )
+
+        if SYSTEM == "Darwin":
+            for info in _get_mac_window_infos():
+                if _mac_window_id(info) == int(hwnd):
+                    return _game_window_from_mac_info(info)
             return None
-        return GameWindow(
-            hwnd=hwnd,
-            title=win32gui.GetWindowText(hwnd).strip(),
-            window_rect=_get_window_rect(hwnd),
-            client_rect=_get_client_rect_on_screen(hwnd),
-        )
+
+        raise RuntimeError(f"暂不支持当前系统：{SYSTEM}")
     except Exception:
         return None
 
@@ -222,16 +348,37 @@ def refresh_window(hwnd: int) -> Optional[GameWindow]:
 def bring_to_front(hwnd: int, restore: bool = True) -> bool:
     """
     尝试把窗口置前。
-    注意：Windows 有前台窗口限制，偶尔可能失败。
+    macOS 只能激活窗口所属 App，具体窗口置前由系统决定。
     """
     try:
-        if restore and win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(0.2)
+        if SYSTEM == "Windows":
+            win32con, win32gui = _require_windows_modules()
+            if restore and win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.2)
 
-        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-        win32gui.SetForegroundWindow(hwnd)
-        return True
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            win32gui.SetForegroundWindow(hwnd)
+            return True
+
+        if SYSTEM == "Darwin":
+            AppKit, _ = _require_quartz_modules()
+            window = refresh_window(hwnd)
+            if window is None:
+                return False
+
+            pid = int((window.metadata or {}).get("owner_pid") or 0)
+            if pid <= 0:
+                return False
+
+            app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if app is None:
+                return False
+
+            opts = AppKit.NSApplicationActivateIgnoringOtherApps
+            return bool(app.activateWithOptions_(opts))
+
+        raise RuntimeError(f"暂不支持当前系统：{SYSTEM}")
     except Exception:
         return False
 
@@ -266,7 +413,7 @@ def print_candidate_windows(keywords: Optional[Iterable[str]] = None) -> None:
     candidates = enum_candidate_windows(keywords=keywords)
     for i, w in enumerate(candidates, 1):
         print(
-            f"[{i}] hwnd={w.hwnd} title={w.title!r} "
+            f"[{i}] id={w.hwnd} platform={w.platform} title={w.title!r} "
             f"client={w.client_rect.left},{w.client_rect.top},"
             f"{w.client_rect.width}x{w.client_rect.height}"
         )

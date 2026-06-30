@@ -9,6 +9,8 @@ screen_capture.py
 返回图像格式：
     - capture_window() 返回 OpenCV BGR numpy.ndarray。
     - 坐标默认基于 window.client_rect。
+    - Windows 的 client_rect 不含标题栏；macOS 的窗口列表拿不到客户区，
+      client_rect 与 window_rect 相同，因此建议把游戏窗口内容区域尽量铺满窗口。
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ class ScreenCapture:
     """
 
     def __init__(self) -> None:
-        self._sct = mss.mss()
+        self._sct = mss.MSS()
 
     def close(self) -> None:
         try:
@@ -84,7 +86,7 @@ class ScreenCapture:
         """
         截取窗口。
         client_only=True：只截客户区，推荐。
-        refresh=True：截图前重新读取 hwnd 位置，窗口移动后坐标不会旧。
+        refresh=True：截图前重新读取窗口位置，窗口移动后坐标不会旧。
         """
         if refresh:
             latest = refresh_window(window.hwnd)

@@ -4,7 +4,8 @@ clicker.py
 把 vision.py 识别到的“客户区图像坐标”转换成屏幕坐标，并执行鼠标点击。
 
 依赖：
-    pip install pywin32
+    Windows: pip install pywin32
+    macOS:   pip install pyobjc-framework-Quartz
 
 坐标约定：
     - Vision 返回的 MatchResult.center 是“窗口客户区截图”里的像素坐标。
@@ -21,13 +22,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
+import platform
 import random
 import time
 
-import win32api
-import win32con
-
 from window_manager import GameWindow, Rect, refresh_window, bring_to_front
+
+
+SYSTEM = platform.system()
 
 
 @dataclass
@@ -87,6 +89,21 @@ class Clicker:
             print(f"[DRY-RUN] click_screen ({x}, {y}) button={button}")
             return ClickResult(True, (x, y), "dry_run")
 
+        if SYSTEM == "Windows":
+            return self._click_screen_windows(x, y, button)
+
+        if SYSTEM == "Darwin":
+            return self._click_screen_macos(x, y, button)
+
+        return ClickResult(False, (x, y), f"暂不支持当前系统: {SYSTEM}")
+
+    def _click_screen_windows(self, x: int, y: int, button: str) -> ClickResult:
+        try:
+            import win32api
+            import win32con
+        except ImportError as e:
+            return ClickResult(False, (x, y), f"缺少 pywin32: {e}")
+
         try:
             win32api.SetCursorPos((x, y))
             time.sleep(0.02)
@@ -103,6 +120,37 @@ class Clicker:
             win32api.mouse_event(down, 0, 0, 0, 0)
             time.sleep(self.click_down_up_delay)
             win32api.mouse_event(up, 0, 0, 0, 0)
+            return ClickResult(True, (x, y), "clicked")
+        except Exception as e:
+            return ClickResult(False, (x, y), repr(e))
+
+    def _click_screen_macos(self, x: int, y: int, button: str) -> ClickResult:
+        try:
+            import Quartz
+        except ImportError as e:
+            return ClickResult(False, (x, y), f"缺少 PyObjC Quartz: {e}")
+
+        try:
+            if button == "left":
+                down_type = Quartz.kCGEventLeftMouseDown
+                up_type = Quartz.kCGEventLeftMouseUp
+                cg_button = Quartz.kCGMouseButtonLeft
+            elif button == "right":
+                down_type = Quartz.kCGEventRightMouseDown
+                up_type = Quartz.kCGEventRightMouseUp
+                cg_button = Quartz.kCGMouseButtonRight
+            else:
+                return ClickResult(False, (x, y), f"不支持的鼠标按钮: {button}")
+
+            point = Quartz.CGPointMake(float(x), float(y))
+            move = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventMouseMoved, point, cg_button)
+            down = Quartz.CGEventCreateMouseEvent(None, down_type, point, cg_button)
+            up = Quartz.CGEventCreateMouseEvent(None, up_type, point, cg_button)
+
+            for event in (move, down):
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            time.sleep(self.click_down_up_delay)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
             return ClickResult(True, (x, y), "clicked")
         except Exception as e:
             return ClickResult(False, (x, y), repr(e))

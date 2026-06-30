@@ -1,6 +1,8 @@
 # QQFarmHelper
 
-基于 OpenCV 模板匹配的 Windows 桌面自动化实验项目，用于识别 QQ 经典农场窗口、好友列表、拜访按钮、一键摘取/一键务农按钮，并执行本地自动化操作。
+基于 OpenCV 模板匹配的桌面自动化实验项目，用于识别 QQ 经典农场窗口、好友列表、拜访按钮、一键摘取/一键务农按钮，并执行本地自动化操作。
+
+当前支持 Windows 和 macOS。Windows 使用 pywin32 操作窗口和鼠标；macOS 使用 PyObjC/Quartz 操作窗口和鼠标。
 
 ## 功能
 
@@ -20,7 +22,7 @@
    - "wait" 恢复旧逻辑，全部访问过就等待
 ## 使用方法
 
-1. 电脑端打开 QQ 经典农场，点击右上角**最大化**，避免因为分辨率不一致导致匹配失败。
+1. 电脑端打开 QQ 经典农场，尽量让游戏内容区域铺满窗口，避免因为分辨率不一致导致匹配失败。
 2. 如果匹配失败，可以自行裁取对应按钮图片，替换 `templates/` 目录下的模板：
 
 | 模板文件 | 说明 |
@@ -35,19 +37,38 @@
 
 ## 环境
 
-- Windows 11
 - Python 3.10+
 - OpenCV
-- pywin32
 - mss
-- keyboard
 - numpy
+- Windows: pywin32
+- macOS: PyObjC Quartz/Cocoa
 
 ## 安装
 
 ```bash
 pip install -r requirements.txt
 ```
+
+## 运行
+
+```bash
+python main_gui.py
+```
+
+macOS 首次运行前，需要在系统设置里给运行 Python 的程序授权：
+
+1. 系统设置 -> 隐私与安全性 -> 屏幕录制：勾选 Terminal、iTerm、PyCharm 或你实际启动脚本的 App。
+2. 系统设置 -> 隐私与安全性 -> 辅助功能：勾选同一个 App，用于发送鼠标点击。
+3. 授权后重启对应 App，再运行程序。
+
+如果程序找不到窗口，可以先打印当前可见窗口，确认窗口标题是否包含配置里的关键词：
+
+```bash
+python window_manager.py
+```
+
+如果 macOS 上标题不匹配，修改 `config_runtime.json` 里的 `window_keywords`，加入实际显示的 App 或窗口标题。
 
 ## 免责声明
 
