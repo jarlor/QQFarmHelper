@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, Any, List
 import json
 import logging
+import random
 import time
 from pathlib import Path
 
@@ -73,7 +74,10 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "max_visible_visit_buttons": 8,
         "prefer_actionable_friends": True,
         "enabled_actions": ["pick_button", "pick_hand", "farm_button"],
-        "max_actions_per_friend": 5,
+        "max_actions_per_friend": 12,
+        "enabled_friend_row_actions": ["friend_action_harvest", "friend_action_hoe"],
+        "enable_crop_pickable": True,
+        "farm_button_click_probability": 0.3,
         "max_steps": 0,
         "stop_after_cycles": 0
     },
@@ -333,14 +337,35 @@ class FarmStateMachine:
 
     def filter_actionable_visit_buttons(self, frame_bgr: np.ndarray, buttons: List[Any]) -> List[Any]:
         actionable: List[Any] = []
+        enabled = self.config.get("behavior", {}).get(
+            "enabled_friend_row_actions",
+            ["friend_action_harvest", "friend_action_hoe"],
+        )
         for button in buttons:
-            action = self.vision.detect_friend_row_action(frame_bgr, button)
-            LOGGER.info(
-                "好友行动标记：visit_center=%s score=%.3f found=%s",
-                button.center, action.score, action.found
+            actions = self.vision.detect_friend_row_actions(
+                frame_bgr,
+                button,
+                enabled_actions=enabled,
             )
-            if action.found:
+            if actions:
+                action_text = ", ".join(
+                    f"{action.action_name}:{action.match.score:.3f}"
+                    for action in actions
+                )
+                LOGGER.info(
+                    "好友行动标记：visit_center=%s actions=[%s]",
+                    button.center,
+                    action_text,
+                )
                 actionable.append(button)
+            else:
+                best = self.vision.detect_friend_row_action(frame_bgr, button)
+                LOGGER.info(
+                    "好友行动标记：visit_center=%s actions=[] best=%s:%.3f",
+                    button.center,
+                    best.template_name,
+                    best.score,
+                )
         return actionable
 
     # ---------- 页面处理 ----------
@@ -379,14 +404,23 @@ class FarmStateMachine:
         match = self.vision.detect_self_home_friend_menu(frame)
 
         if match.found:
-            result = self.clicker.click_match(self.window, match)
-            LOGGER.info("点击好友按钮：%s", result)
+            rx, ry = self.config["click_points"]["friend_menu"]
+            result = self.clicker.click_relative(self.window, rx, ry)
+            LOGGER.info("点击好友按钮：%s match_score=%.3f", result, match.score)
+            if not result.ok:
+                self.stats.errors += 1
+                self.sleep("no_button_sleep")
+                return
         else:
             # 兜底：只在页面已经被判定为 SELF_HOME 时使用相对坐标。
             if self.config.get("behavior", {}).get("allow_fallback_click", True):
                 rx, ry = self.config["click_points"]["friend_menu"]
                 result = self.clicker.click_relative(self.window, rx, ry)
                 LOGGER.warning("好友按钮模板未命中，使用兜底坐标：%s", result)
+                if not result.ok:
+                    self.stats.errors += 1
+                    self.sleep("no_button_sleep")
+                    return
             else:
                 LOGGER.warning("好友按钮未识别，不点击")
                 self.sleep("no_button_sleep")
@@ -422,6 +456,10 @@ class FarmStateMachine:
 
         result = self.clicker.click_match(self.window, button)
         LOGGER.info("点击拜访：%s score=%.3f center=%s", result, button.score, button.center)
+        if not result.ok:
+            self.stats.errors += 1
+            self.sleep("no_button_sleep")
+            return
 
         self.stats.visits += 1
         self.sleep("after_visit_click")
@@ -458,11 +496,19 @@ class FarmStateMachine:
         if home.found:
             result = self.clicker.click_match(self.window, home)
             LOGGER.info("点击回家：%s", result)
+            if not result.ok:
+                self.stats.errors += 1
+                self.sleep("no_button_sleep")
+                return
         else:
             if self.config.get("behavior", {}).get("allow_fallback_click", True):
                 rx, ry = self.config["click_points"]["home"]
                 result = self.clicker.click_relative(self.window, rx, ry)
                 LOGGER.warning("回家按钮模板未命中，使用兜底坐标：%s", result)
+                if not result.ok:
+                    self.stats.errors += 1
+                    self.sleep("no_button_sleep")
+                    return
             else:
                 LOGGER.warning("回家按钮未识别，不点击")
                 self.sleep("no_button_sleep")
@@ -475,6 +521,7 @@ class FarmStateMachine:
         """
         在好友家页面处理所有允许的动作按钮。
         每点一次都重新截图，避免同一位置重复点击旧匹配结果。
+        先处理底部一键动作，再处理农田上的单个“可摘”浮标。
         """
         if self.window is None:
             return 0
@@ -482,34 +529,66 @@ class FarmStateMachine:
         behavior = self.config.get("behavior", {})
         enabled_actions = behavior.get("enabled_actions", ["pick_button", "pick_hand", "farm_button"])
         max_actions = int(behavior.get("max_actions_per_friend", 5))
+        enable_crop_pickable = bool(behavior.get("enable_crop_pickable", True))
+        farm_button_click_probability = max(
+            0.0,
+            min(1.0, float(behavior.get("farm_button_click_probability", 0.3))),
+        )
         actions_clicked = 0
         current = frame
         clicked_keys: set[tuple[str, tuple[int, int] | None]] = set()
 
         for _ in range(max(1, max_actions)):
-            actions = [
+            primary_actions = [
                 action
                 for action in self.vision.detect_friend_actions(current, enabled_actions=enabled_actions)
                 if (action.action_name, action.match.center) not in clicked_keys
             ]
-            if not actions:
+            if primary_actions:
+                action = primary_actions[0]
+            elif enable_crop_pickable:
+                crop_actions = [
+                    action
+                    for action in self.vision.detect_crop_pickable_markers(current)
+                    if (action.action_name, action.match.center) not in clicked_keys
+                ]
+                if not crop_actions:
+                    LOGGER.info("好友家没有识别到可点击动作")
+                    break
+                action = crop_actions[0]
+            else:
                 LOGGER.info("好友家没有识别到可点击动作")
                 break
 
-            action = actions[0]
             match = action.match
             clicked_keys.add((action.action_name, match.center))
+            if action.action_name == "farm_button":
+                roll = random.random()
+                if roll >= farm_button_click_probability:
+                    LOGGER.info(
+                        "跳过一键务农：probability=%.2f roll=%.3f center=%s",
+                        farm_button_click_probability,
+                        roll,
+                        match.center,
+                    )
+                    continue
+
             LOGGER.info(
                 "点击好友动作：%s score=%.3f center=%s",
                 action.action_name, match.score, match.center
             )
             result = self.clicker.click_match(self.window, match)
             LOGGER.info("动作点击结果：%s", result)
+            if not result.ok:
+                self.stats.errors += 1
+                break
 
             if action.action_name in ("pick_button", "pick_hand"):
                 self.stats.picks += 1
             elif action.action_name == "farm_button":
                 self.stats.farms += 1
+            elif action.action_name == "crop_pickable":
+                self.stats.picks += 1
 
             actions_clicked += 1
             self.sleep("after_action_click")

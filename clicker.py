@@ -133,6 +133,14 @@ class Clicker:
             return ClickResult(False, (x, y), f"缺少 PyObjC Quartz: {e}")
 
         try:
+            preflight = getattr(Quartz, "CGPreflightPostEventAccess", None)
+            if callable(preflight) and not bool(preflight()):
+                return ClickResult(
+                    False,
+                    (x, y),
+                    "macOS 未授权当前终端发送鼠标事件，请在系统设置 -> 隐私与安全性 -> 辅助功能中授权",
+                )
+
             if button == "left":
                 down_type = Quartz.kCGEventLeftMouseDown
                 up_type = Quartz.kCGEventLeftMouseUp

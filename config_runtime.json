@@ -1,5 +1,15 @@
 {
   "template_dir": "templates",
+  "window_keywords": [
+    "QQ经典农场",
+    "QQ农场",
+    "QQMini",
+    "QQEXMiniProgram",
+    "QQ空间",
+    "MuMu",
+    "雷电模拟器",
+    "腾讯手游助手"
+  ],
   "timing": {
     "loop_interval": 0.25,
     "after_click": 0.65,
@@ -24,7 +34,13 @@
       "pick_hand",
       "farm_button"
     ],
-    "max_actions_per_friend": 5,
+    "max_actions_per_friend": 12,
+    "enabled_friend_row_actions": [
+      "friend_action_harvest",
+      "friend_action_hoe"
+    ],
+    "enable_crop_pickable": true,
+    "farm_button_click_probability": 1.0,
     "max_steps": 0,
     "stop_after_cycles": 0,
     "all_visible_visited_action": "revisit_top"

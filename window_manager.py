@@ -21,6 +21,8 @@ SYSTEM = platform.system()
 DEFAULT_WINDOW_KEYWORDS = [
     "QQ经典农场",
     "QQ农场",
+    "QQMini",
+    "QQEXMiniProgram",
     "QQ空间",
     "MuMu",
     "雷电模拟器",

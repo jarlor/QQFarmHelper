@@ -45,6 +45,8 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "pick_button": 0.80,
     "pick_hand": 0.76,
     "farm_button": 0.72,
+    "crop_pickable": 0.80,
+    "friend_action_harvest": 0.82,
     "friend_action_hoe": 0.82,
 }
 
@@ -86,6 +88,10 @@ DEFAULT_ROIS: Dict[str, RatioROI] = {
     # 所以这里给宽一些，只在 FRIEND_HOME 页面使用，避免误扫自己的主页。
     "friend_action_buttons": [0.22, 0.64, 0.75, 0.82],
 
+    # 好友家农田上方的单个“可摘”浮标区域。
+    # 下边界避开底部好友栏，避免把好友头像上的手形/锄头标记当成农田动作。
+    "crop_pickable_markers": [0.08, 0.34, 0.95, 0.78],
+
     # 更紧的单按钮区域，调试用
     "friend_action_center": [0.34, 0.69, 0.63, 0.79],
 
@@ -109,11 +115,22 @@ ACTION_PRIORITY: Dict[str, int] = {
     "pick_button": 10,
     "pick_hand": 20,
     "farm_button": 30,
+    "crop_pickable": 40,
+}
+
+
+FRIEND_ROW_ACTION_PRIORITY: Dict[str, int] = {
+    "friend_action_harvest": 10,
+    "friend_action_hoe": 20,
 }
 
 
 def action_priority(action_name: str) -> int:
     return ACTION_PRIORITY.get(action_name, 100)
+
+
+def friend_row_action_priority(action_name: str) -> int:
+    return FRIEND_ROW_ACTION_PRIORITY.get(action_name, 100)
 
 
 @dataclass
@@ -144,6 +161,12 @@ class PageDetection:
 
 @dataclass
 class ActionDetection:
+    action_name: str
+    match: MatchResult
+
+
+@dataclass
+class FriendRowActionDetection:
     action_name: str
     match: MatchResult
 
@@ -488,10 +511,60 @@ class Vision:
         buttons.sort(key=lambda m: (m.center[1] if m.center else 999999, -m.score))
         return buttons
 
+    def detect_friend_row_actions(
+        self,
+        frame_bgr: np.ndarray,
+        visit_button: MatchResult,
+        enabled_actions: Optional[Sequence[str]] = None,
+    ) -> List[FriendRowActionDetection]:
+        """
+        在好友列表的一行里检测可帮忙动作标记。
+
+        目前支持：
+            - friend_action_harvest: 手形/面罩，可收获或可摘
+            - friend_action_hoe: 小锄头，可务农
+        """
+        if not visit_button.box:
+            return []
+
+        h, w = frame_bgr.shape[:2]
+        x1, y1, x2, y2 = visit_button.box
+        roi = [
+            0.00,
+            max(0.0, (y1 - 0.05 * h) / h),
+            max(0.01, x1 / w),
+            min(1.0, (y2 + 0.04 * h) / h),
+        ]
+        action_names = list(enabled_actions or ("friend_action_harvest", "friend_action_hoe"))
+        actions: List[FriendRowActionDetection] = []
+        scales = self._get_adaptive_scales(frame_bgr.shape)
+
+        for name in action_names:
+            try:
+                result = self.match_template(
+                    frame_bgr,
+                    name,
+                    roi=roi,
+                    threshold=self.thresholds.get(name),
+                    scales=scales,
+                )
+            except FileNotFoundError:
+                continue
+
+            if result.found:
+                actions.append(FriendRowActionDetection(action_name=name, match=result))
+
+        actions.sort(key=lambda a: friend_row_action_priority(a.action_name))
+        return actions
+
     def detect_friend_row_action(self, frame_bgr: np.ndarray, visit_button: MatchResult) -> MatchResult:
         """
-        在好友列表的一行里检测可帮忙动作标记，例如金币后面的小锄头图标。
+        兼容旧调用：返回该行最优先的可操作标记，找不到时返回最佳候选。
         """
+        actions = self.detect_friend_row_actions(frame_bgr, visit_button)
+        if actions:
+            return actions[0].match
+
         if not visit_button.box:
             return MatchResult("friend_action_hoe", False, 0.0)
 
@@ -503,13 +576,24 @@ class Vision:
             max(0.01, x1 / w),
             min(1.0, (y2 + 0.04 * h) / h),
         ]
-        return self.match_template(
-            frame_bgr,
-            "friend_action_hoe",
-            roi=roi,
-            threshold=self.thresholds.get("friend_action_hoe", 0.82),
-            scales=self._get_adaptive_scales(frame_bgr.shape),
-        )
+        candidates: List[MatchResult] = []
+        for name in ("friend_action_harvest", "friend_action_hoe"):
+            try:
+                candidates.append(
+                    self.match_template(
+                        frame_bgr,
+                        name,
+                        roi=roi,
+                        threshold=self.thresholds.get(name),
+                        scales=self._get_adaptive_scales(frame_bgr.shape),
+                    )
+                )
+            except FileNotFoundError:
+                continue
+
+        if candidates:
+            return max(candidates, key=lambda r: r.score)
+        return MatchResult("friend_action_hoe", False, 0.0)
 
     def detect_friend_home_home_button(self, frame_bgr: np.ndarray) -> MatchResult:
         return self.match_template(
@@ -602,6 +686,31 @@ class Vision:
 
         actions.sort(key=lambda a: action_priority(a.action_name))
         return actions
+
+    def detect_crop_pickable_markers(
+        self,
+        frame_bgr: np.ndarray,
+        threshold: Optional[float] = None,
+        max_results: int = 12,
+    ) -> List[ActionDetection]:
+        """
+        检测好友家农田里的单个“可摘”浮标。
+        """
+        try:
+            markers = self.find_all_templates(
+                frame_bgr,
+                "crop_pickable",
+                roi=self.rois["crop_pickable_markers"],
+                threshold=threshold,
+                max_results=max_results,
+                nms_iou=0.25,
+                scales=self._get_adaptive_scales(frame_bgr.shape),
+            )
+        except FileNotFoundError:
+            return []
+
+        markers.sort(key=lambda m: (m.center[1] if m.center else 999999, m.center[0] if m.center else 999999))
+        return [ActionDetection(action_name="crop_pickable", match=m) for m in markers]
 
     # ---------- 多帧确认 ----------
 
@@ -775,11 +884,17 @@ if __name__ == "__main__":
         print("visit buttons:", len(buttons))
         for i, b in enumerate(buttons, 1):
             print(i, b)
+            row_actions = vision.detect_friend_row_actions(frame, b)
+            print("  row_actions:", row_actions)
 
     elif det.page_type == PageType.FRIEND_HOME:
         home = vision.detect_friend_home_home_button(frame)
         actions = vision.detect_friend_actions(frame)
+        crop_actions = vision.detect_crop_pickable_markers(frame)
         print("home:", home)
         print("actions:", len(actions))
         for i, action in enumerate(actions, 1):
+            print(i, action)
+        print("crop_pickable:", len(crop_actions))
+        for i, action in enumerate(crop_actions, 1):
             print(i, action)
